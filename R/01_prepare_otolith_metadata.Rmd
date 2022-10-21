@@ -1,0 +1,123 @@
+---
+title: "Prepare otolith metadata"
+author: "Max Lindmark"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+  df_print: paged
+  code_folding: hide
+pdf_document: default
+editor_options: 
+  chunk_output_type: console
+---
+  
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.align ='center'
+)
+```
+
+# Intro
+In this script, I load exchange data from datras and link that with otolith metadat to get spatiall reference them. Next I use the coordinates to extract temperature and oxygen values for each haul.
+
+## Load libraries
+
+```{r, message=FALSE}
+library(tidyverse)
+library(readxl)
+library(tidylog)
+library(RCurl)
+library(viridis)
+library(RColorBrewer)
+library(patchwork)
+library(janitor)
+library(icesDatras)
+library(mapdata)
+library(patchwork)
+library(rgdal)
+library(raster)
+library(sf)
+library(rgeos)
+library(lattice)
+library(ncdf4)
+library(marmap)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(mapplots)
+library(geosphere)
+library(modelr)
+library(devtools)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Source code for map plots
+source("/Users/maxlindmark/Dropbox/Max work/R/metabolic_otoliths/R/functions/map_plot.R")
+# SourceURL <- "https://raw.github.com/christophergandrud/christophergandrud.github.com/master/SourceCode/CarsScatterExample.R"
+# source_url(SourceURL)
+
+source("/Users/maxlindmark/Dropbox/Max work/R/cod_interactions/R/functions/lon_lat_utm.R")
+
+theme_set(theme_plot())
+
+# Continuous colors
+options(ggplot2.continuous.colour = "viridis")
+
+# Discrete colors
+scale_colour_discrete <- function(...) {
+  scale_colour_brewer(palette = "Set1")
+}
+
+scale_fill_discrete <- function(...) {
+  scale_fill_brewer(palette = "Set1")
+}
+```
+
+## Read data
+
+BITS trawl information
+```{r, message=FALSE}
+# Read individual and haul data
+haul <- read_xlsx("data/BITS 2016-2021_hauldata.xlsx") %>% janitor::clean_names()
+ind <- read_xlsx("data/BITS 2016-2021_Cod_individualdata.xlsx") %>% janitor::clean_names()
+
+glimpse(haul)
+glimpse(ind)
+
+# Find unique haul-id
+haul %>% 
+  mutate(haul_id = paste(fromdate, seq_no, sep = "_")) %>% 
+  group_by(haul_id) %>% 
+  mutate(n = length(unique(lat_start_dec))) %>% 
+  ungroup() %>% 
+  distinct(n)
+
+haul <- haul %>% 
+  mutate(haul_id = paste(fromdate, seq_no, sep = "_")) %>% 
+  dplyr::select(haul_id, lat_start_dec, lat_stop_dec, long_start_dec, long_stop_dec, subdiv) %>% 
+  distinct(haul_id, .keep_all = TRUE)
+
+ind <- ind %>% 
+  mutate(haul_id = paste(date, seq_no, sep = "_"),
+         oto_id = paste(haul_id, otolithno, sep = "_")) %>% 
+  dplyr::select(year, oto_id, haul_id, date, species, size, lengthclass, age, weight, sex, maturity, stomach_sample) %>% 
+  distinct(oto_id, .keep_all = TRUE)
+  
+# Join
+dat <- left_join(ind, haul)  
+
+# Add UTM coords
+utm_coords <- LongLatToUTM(dat$long_start_dec, dat$lat_start_dec, zone = 33)
+dat$X <- utm_coords$X
+dat$Y <- utm_coords$Y
+
+# Plot
+plot_map + 
+  geom_point(data = dat, aes(X, Y), size = 3/4, alpha = 3/4) +
+  facet_wrap(~year)
+```
+
+
+
+
