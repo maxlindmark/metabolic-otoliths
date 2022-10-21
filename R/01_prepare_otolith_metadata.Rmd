@@ -49,6 +49,7 @@ library(mapplots)
 library(geosphere)
 library(modelr)
 library(devtools)
+library(chron)
 
 world <- ne_countries(scale = "medium", returnclass = "sf")
 
@@ -57,7 +58,7 @@ source("/Users/maxlindmark/Dropbox/Max work/R/metabolic_otoliths/R/functions/map
 # SourceURL <- "https://raw.github.com/christophergandrud/christophergandrud.github.com/master/SourceCode/CarsScatterExample.R"
 # source_url(SourceURL)
 
-source("/Users/maxlindmark/Dropbox/Max work/R/cod_interactions/R/functions/lon_lat_utm.R")
+source("/Users/maxlindmark/Dropbox/Max work/R/metabolic_otoliths/R/functions/lon_lat_utm.R")
 
 theme_set(theme_plot())
 
@@ -94,32 +95,669 @@ haul %>%
   distinct(n)
 
 haul <- haul %>% 
-  mutate(haul_id = paste(fromdate, seq_no, sep = "_")) %>% 
-  dplyr::select(haul_id, lat_start_dec, lat_stop_dec, long_start_dec, long_stop_dec, subdiv) %>% 
+  mutate(haul_id = paste(fromdate, seq_no, sep = "_"),
+         lat = lat_start_dec, #(lat_start_dec + lat_stop_dec)/2,
+         lon = long_start_dec) %>%  #(long_start_dec + long_stop_dec)/2) %>% 
+  dplyr::select(haul_id, lon, lat, subdiv) %>% 
   distinct(haul_id, .keep_all = TRUE)
 
 ind <- ind %>% 
   mutate(haul_id = paste(date, seq_no, sep = "_"),
-         oto_id = paste(haul_id, otolithno, sep = "_")) %>% 
-  dplyr::select(year, oto_id, haul_id, date, species, size, lengthclass, age, weight, sex, maturity, stomach_sample) %>% 
+         oto_id = paste(haul_id, otolithno, sep = "_")) %>%
+  dplyr::select(year, quarter, oto_id, haul_id, date, species, size, lengthclass,
+                age, weight, sex, maturity, stomach_sample) %>% 
   distinct(oto_id, .keep_all = TRUE)
   
 # Join
 dat <- left_join(ind, haul)  
 
 # Add UTM coords
-utm_coords <- LongLatToUTM(dat$long_start_dec, dat$lat_start_dec, zone = 33)
+utm_coords <- LongLatToUTM(dat$lon, dat$lat, zone = 33)
 dat$X <- utm_coords$X
 dat$Y <- utm_coords$Y
 
+dat <- dat %>% filter(year < 2021)
+
 # Plot
-plot_map + 
-  geom_point(data = dat, aes(X, Y), size = 3/4, alpha = 3/4) +
-  facet_wrap(~year)
+nrow(dat)
+
+plot_map_labels_fc + 
+  geom_point(data = dat, aes(X, Y), size = 1/4, color = "grey20") +
+  facet_grid(quarter~year)
 
 ggsave("figures/otolith_map.pdf", width = 17, height = 17, units = "cm")
 ```
 
+## Add environmental covariates
+### Oxygen
+
+```{r oxygen}
+# Downloaded from here: https://resources.marine.copernicus.eu/?option=com_csw&view=details&product_id=BALTICSEA_REANALYSIS_BIO_003_012
+# Extract raster points: https://gisday.wordpress.com/2014/03/24/extract-raster-values-from-points-using-r/comment-page-1/
+# https://rpubs.com/boyerag/297592
+# https://pjbartlein.github.io/REarthSysSci/netCDF.html#get-a-variable
+# Open the netCDF file
+ncin <- nc_open("data/NEMO_Nordic_SCOBI/dataset-reanalysis-scobi-monthlymeans_1664182224542.nc")
+
+print(ncin)
+
+# Get longitude and latitude
+lon <- ncvar_get(ncin,"longitude")
+nlon <- dim(lon)
+head(lon)
+
+lat <- ncvar_get(ncin,"latitude")
+nlat <- dim(lat)
+head(lat)
+
+# Get time
+time <- ncvar_get(ncin,"time")
+time
+
+tunits <- ncatt_get(ncin,"time","units")
+nt <- dim(time)
+nt
+tunits
+
+# Get oxygen
+dname <- "o2b"
+
+oxy_array <- ncvar_get(ncin,dname)
+dlname <- ncatt_get(ncin,dname,"long_name")
+dunits <- ncatt_get(ncin,dname,"units")
+fillvalue <- ncatt_get(ncin,dname,"_FillValue")
+dim(oxy_array)
+
+# Get global attributes
+title <- ncatt_get(ncin,0,"title")
+institution <- ncatt_get(ncin,0,"institution")
+datasource <- ncatt_get(ncin,0,"source")
+references <- ncatt_get(ncin,0,"references")
+history <- ncatt_get(ncin,0,"history")
+Conventions <- ncatt_get(ncin,0,"Conventions")
+
+# Convert time: split the time units string into fields
+tustr <- strsplit(tunits$value, " ")
+tdstr <- strsplit(unlist(tustr)[3], "-")
+tmonth <- as.integer(unlist(tdstr)[2])
+tday <- as.integer(unlist(tdstr)[3])
+tyear <- as.integer(unlist(tdstr)[1])
+
+# Here I deviate from the guide a little bit. Save this info:
+dates <- chron(time, origin = c(tmonth, tday, tyear))
+
+# Crop the date variable
+months <- as.numeric(substr(dates, 2, 3))
+years <- as.numeric(substr(dates, 8, 9))
+years <- ifelse(years > 90, 1900 + years, 2000 + years)
+
+# Replace netCDF fill values with NA's
+oxy_array[oxy_array == fillvalue$value] <- NA
+
+# Next, we need to work with the months that correspond to the quarters that we use.
+# loop through each time step, and if it is a good month save it as a raster.
+# First get the index of months that correspond to Q4
+months
+
+index_keep_q1 <- which(months < 4)
+index_keep_q4 <- which(months > 9)
+
+oxy_q1 <- oxy_array[, , index_keep_q1]
+oxy_q4 <- oxy_array[, , index_keep_q4]
+
+months_keep_q1 <- months[index_keep_q1]
+months_keep_q4 <- months[index_keep_q4]
+
+years_keep_q1 <- years[index_keep_q1]
+years_keep_q4 <- years[index_keep_q4]
+
+# Now we have an array with data for that quarter
+# We need to now calculate the average within a year.
+# Get a sequence that takes every third value between 1: number of months (length)
+loop_seq_q1 <- seq(1, dim(oxy_q1)[3], by = 3)
+loop_seq_q4 <- seq(1, dim(oxy_q4)[3], by = 3)
+
+# Create objects that will hold data
+dlist_q1 <- list()
+dlist_q4 <- list()
+
+oxy_1 <- c()
+oxy_2 <- c()
+oxy_3 <- c()
+oxy_ave_q1 <- c()
+
+oxy_10 <- c()
+oxy_11 <- c()
+oxy_12 <- c()
+oxy_ave_q4 <- c()
+
+# Now average by quarter. The vector loop_seq_q1 is 1, 4, 7 etc. So first i is 1, 2, 3,
+# which is the index we want. 
+
+for(i in loop_seq_q1) { # We can use q1 as looping index, doesn't matter!
+  
+  oxy_1 <- oxy_q1[, , (i)]
+  oxy_2 <- oxy_q1[, , (i + 1)]
+  oxy_3 <- oxy_q1[, , (i + 2)]
+  
+  oxy_10 <- oxy_q4[, , (i)]
+  oxy_11 <- oxy_q4[, , (i + 1)]
+  oxy_12 <- oxy_q4[, , (i + 2)]
+  
+  oxy_ave_q1 <- (oxy_1 + oxy_2 + oxy_3) / 3
+  oxy_ave_q4 <- (oxy_10 + oxy_11 + oxy_12) / 3
+    
+  list_pos_q1 <- ((i/3) - (1/3)) + 1 # to get index 1:n(years)
+  list_pos_q4 <- ((i/3) - (1/3)) + 1 # to get index 1:n(years)
+  
+  dlist_q1[[list_pos_q1]] <- oxy_ave_q1
+  dlist_q4[[list_pos_q4]] <- oxy_ave_q4
+
+}
+
+# Now name the lists with the year:
+names(dlist_q1) <- unique(years_keep_q1)
+names(dlist_q4) <- unique(years_keep_q4)
+
+# Now I need to make a loop where I extract the raster value for each year...
+# The cpue data is called dat so far in this script
+
+# Filter years in the cpue data frame to only have the years I have oxygen for
+d_sub_oxy_q1 <- dat %>% filter(quarter == 1) %>% filter(year %in% names(dlist_q1)) %>% droplevels()
+d_sub_oxy_q4 <- dat %>% filter(quarter == 4) %>% filter(year %in% names(dlist_q4)) %>% droplevels()
+
+# Create data holding object
+oxy_data_list_q1 <- list()
+oxy_data_list_q4 <- list()
+
+# ... And for the oxygen raster
+raster_list_q1 <- list()
+raster_list_q4 <- list()
+
+# Create factor year for indexing the list in the loop
+d_sub_oxy_q1$year_f <- as.factor(d_sub_oxy_q1$year)
+d_sub_oxy_q4$year_f <- as.factor(d_sub_oxy_q4$year)
+
+# Loop through each year and extract raster values for the cpue data points
+for(i in sort(unique(d_sub_oxy_q1$year_f))) { # We can use q1 as looping index, doesn't matter!
+  
+  # Set plot limits
+  ymin = 54; ymax = 58; xmin = 12; xmax = 22
+
+  # Subset a year
+  oxy_slice_q1 <- dlist_q1[[i]]
+  oxy_slice_q4 <- dlist_q4[[i]]
+  
+  # Create raster for that year (i)
+  r_q1 <- raster(t(oxy_slice_q1), xmn = min(lon), xmx = max(lon), ymn = min(lat), ymx = max(lat),
+                 crs = CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))
+  r_q4 <- raster(t(oxy_slice_q4), xmn = min(lon), xmx = max(lon), ymn = min(lat), ymx = max(lat),
+                 crs = CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))
+  
+  # Flip...
+  r_q1 <- flip(r_q1, direction = 'y')
+  r_q4 <- flip(r_q4, direction = 'y')
+  
+  plot(r_q1, main = paste(i, "Q1"))
+  plot(r_q4, main = paste(i, "Q4"))
+  
+  # Filter the same year (i) in the data and select only coordinates
+  d_slice_q1 <- d_sub_oxy_q1 %>% filter(year_f == i) %>% dplyr::select(lon, lat)
+  d_slice_q4 <- d_sub_oxy_q4 %>% filter(year_f == i) %>% dplyr::select(lon, lat)
+  
+  # Make into a SpatialPoints object
+  data_sp_q1 <- SpatialPoints(d_slice_q1)
+  data_sp_q4 <- SpatialPoints(d_slice_q4)
+  
+  # Extract raster value (oxygen)
+  rasValue_q1 <- raster::extract(r_q1, data_sp_q1)
+  rasValue_q4 <- raster::extract(r_q4, data_sp_q4)
+  
+  # Now we want to plot the results of the raster extractions by plotting the cpue
+  # data points over a raster and saving it for each year.
+  # Make the SpatialPoints object into a raster again (for plot)
+  df_q1 <- as.data.frame(data_sp_q1)
+  df_q4 <- as.data.frame(data_sp_q4)
+  
+  # Add in the raster value in the df holding the coordinates for the cpue data
+  d_slice_q1$oxy <- rasValue_q1
+  d_slice_q4$oxy <- rasValue_q4
+  
+  # Add in which year
+  d_slice_q1$year <- i
+  d_slice_q4$year <- i
+
+  # Now the unit of oxygen is mmol/m3. I want it to be ml/L. The original model is in unit ml/L
+  # and it's been converted by the data host. Since it was converted without accounting for
+  # pressure or temperature, I can simply use the following conversion factor:
+  # 1 ml/l = 103/22.391 = 44.661 μmol/l -> 1 ml/l = 0.044661 mmol/l = 44.661 mmol/m^3 -> 0.0223909 ml/l = 1mmol/m^3
+  # https://ocean.ices.dk/tools/unitconversion.aspx
+
+  d_slice_q1$oxy <- d_slice_q1$oxy * 0.0223909
+  d_slice_q4$oxy <- d_slice_q4$oxy * 0.0223909
+    
+  # Create a index for the data last where we store all years (because our loop index
+  # i is not continuous, we can't use it directly)
+  index_q1 <- as.numeric(as.character(d_slice_q1$year))[1] - 1992
+  index_q4 <- as.numeric(as.character(d_slice_q4$year))[1] - 1992
+  
+  # Add each years' data in the list
+  oxy_data_list_q1[[index_q1]] <- d_slice_q1
+  oxy_data_list_q4[[index_q4]] <- d_slice_q4
+  
+  # Save to check each year is ok! First convert the raster to points for plotting
+  # (so that we can use ggplot)
+  map_q1 <- rasterToPoints(r_q1)
+  map_q4 <- rasterToPoints(r_q4)
+  
+  # Make the points a dataframe for ggplot
+  df_rast_q1 <- data.frame(map_q1)
+  df_rast_q4 <- data.frame(map_q4)
+  
+  # Rename y-variable and add year
+  df_rast_q1 <- df_rast_q1 %>% rename("oxy" = "layer") %>% mutate(year = i)
+  df_rast_q4 <- df_rast_q4 %>% rename("oxy" = "layer") %>% mutate(year = i)
+  
+  # Add each years' raster data frame in the list
+  raster_list_q1[[index_q1]] <- df_rast_q1
+  raster_list_q4[[index_q4]] <- df_rast_q4
+  
+  # Make appropriate column headings
+  colnames(df_rast_q1) <- c("Longitude", "Latitude", "oxy")
+  colnames(df_rast_q4) <- c("Longitude", "Latitude", "oxy")
+  
+  # Change unit to ml/L
+  df_rast_q1$oxy <- df_rast_q1$oxy * 0.0223909
+  df_rast_q4$oxy <- df_rast_q4$oxy * 0.0223909
+
+  # Make a map for q1
+  ggplot(data = df_rast_q1, aes(y = Latitude, x = Longitude)) +
+    geom_raster(aes(fill = oxy)) +
+    geom_point(data = d_slice_q1, aes(x = lon, y = lat, fill = oxy),
+               color = "black", size = 5, shape = 21) +
+    theme_bw() +
+    geom_sf(data = world, inherit.aes = F, size = 0.2) +
+    coord_sf(xlim = c(xmin, xmax),
+             ylim = c(ymin, ymax)) +
+    scale_colour_gradientn(colours = rev(terrain.colors(10)),
+                           limits = c(-5, 11)) +
+    scale_fill_gradientn(colours = rev(terrain.colors(10)),
+                         limits = c(-5, 11)) +
+    NULL
+
+  ggsave(paste("figures/supp/oxygen_rasters/", i,"q1.png", sep = ""),
+         width = 6.5, height = 6.5, dpi = 600)
+
+  # Make a map for q4
+  ggplot(data = df_rast_q4, aes(y = Latitude, x = Longitude)) +
+    geom_raster(aes(fill = oxy)) +
+    geom_point(data = d_slice_q4, aes(x = lon, y = lat, fill = oxy),
+               color = "black", size = 5, shape = 21) +
+    theme_bw() +
+    geom_sf(data = world, inherit.aes = F, size = 0.2) +
+    coord_sf(xlim = c(xmin, xmax),
+             ylim = c(ymin, ymax)) +
+    scale_colour_gradientn(colours = rev(terrain.colors(10)),
+                           limits = c(-5, 11)) +
+    scale_fill_gradientn(colours = rev(terrain.colors(10)),
+                         limits = c(-5, 11)) +
+    NULL
+
+  ggsave(paste("figures/supp/oxygen_rasters/", i,"q4.png", sep = ""),
+         width = 6.5, height = 6.5, dpi = 600)
+
+}
+
+# Now create a data frame from the list of all annual values
+big_dat_oxy_q1 <- dplyr::bind_rows(oxy_data_list_q1)
+big_dat_oxy_q4 <- dplyr::bind_rows(oxy_data_list_q4)
+big_dat_oxy <- bind_rows(mutate(big_dat_oxy_q1, quarter = 1),
+                         mutate(big_dat_oxy_q4, quarter = 4))
+
+big_dat_oxy
+
+big_raster_dat_oxy_q1 <- dplyr::bind_rows(raster_list_q1)
+big_raster_dat_oxy_q4 <- dplyr::bind_rows(raster_list_q4)
+big_raster_dat_oxy <- bind_rows(mutate(big_raster_dat_oxy_q1, quarter = 1),
+                                mutate(big_raster_dat_oxy_q4, quarter = 4))
+
+# Now add in the new oxygen column in the original data:
+str(d_sub_oxy_q1)
+str(d_sub_oxy_q4)
+str(big_dat_oxy)
+
+# Create an ID for matching the oxygen data with the cpue data
+dat$id_oxy <- paste(dat$year, dat$quarter, dat$lon, dat$lat, sep = "_")
+big_dat_oxy$id_oxy <- paste(big_dat_oxy$year, big_dat_oxy$quarter, big_dat_oxy$lon, big_dat_oxy$lat, sep = "_")
+
+# Select only the columns we want to merge
+big_dat_sub_oxy <- big_dat_oxy %>% dplyr::select(id_oxy, oxy)
+
+# Remove duplicate ID (one oxy value per id)
+big_dat_sub_oxy %>% group_by(id_oxy) %>% mutate(n = n()) %>% arrange(desc(n))
+big_dat_sub_oxy2 <- big_dat_sub_oxy %>% distinct(id_oxy, .keep_all = TRUE)
+```
+
+### Temperature
+
+```{r temperature}
+# Open the netCDF file
+ncin <- nc_open("data/NEMO_Nordic_SCOBI/dataset-reanalysis-nemo-monthlymeans_1664183191233.nc")
+
+print(ncin)
+
+# Get longitude and latitude
+lon <- ncvar_get(ncin,"longitude")
+nlon <- dim(lon)
+head(lon)
+
+lat <- ncvar_get(ncin,"latitude")
+nlat <- dim(lat)
+head(lat)
+
+# Get time
+time <- ncvar_get(ncin,"time")
+time
+
+tunits <- ncatt_get(ncin,"time","units")
+nt <- dim(time)
+nt
+tunits
+
+# Get temperature
+dname <- "bottomT"
+
+temp_array <- ncvar_get(ncin,dname)
+dlname <- ncatt_get(ncin,dname,"long_name")
+dunits <- ncatt_get(ncin,dname,"units")
+fillvalue <- ncatt_get(ncin,dname,"_FillValue")
+dim(temp_array)
+
+# Get global attributes
+title <- ncatt_get(ncin,0,"title")
+institution <- ncatt_get(ncin,0,"institution")
+datasource <- ncatt_get(ncin,0,"source")
+references <- ncatt_get(ncin,0,"references")
+history <- ncatt_get(ncin,0,"history")
+Conventions <- ncatt_get(ncin,0,"Conventions")
+
+# Convert time: split the time units string into fields
+tustr <- strsplit(tunits$value, " ")
+tdstr <- strsplit(unlist(tustr)[3], "-")
+tmonth <- as.integer(unlist(tdstr)[2])
+tday <- as.integer(unlist(tdstr)[3])
+tyear <- as.integer(unlist(tdstr)[1])
+
+# Here I deviate from the guide a little bit. Save this info:
+dates <- chron(time, origin = c(tmonth, tday, tyear))
+
+# Crop the date variable
+months <- as.numeric(substr(dates, 2, 3))
+years <- as.numeric(substr(dates, 8, 9))
+years <- ifelse(years > 90, 1900 + years, 2000 + years)
+
+# Replace netCDF fill values with NA's
+temp_array[temp_array == fillvalue$value] <- NA
+
+# Next, we need to work with the months that correspond to the quarters that we use.
+# loop through each time step, and if it is a good month save it as a raster.
+# First get the index of months that correspond to Q4
+months
+
+index_keep_q1 <- which(months < 4)
+index_keep_q4 <- which(months > 9)
+
+temp_q1 <- temp_array[, , index_keep_q1]
+temp_q4 <- temp_array[, , index_keep_q4]
+
+months_keep_q1 <- months[index_keep_q1]
+months_keep_q4 <- months[index_keep_q4]
+
+years_keep_q1 <- years[index_keep_q1]
+years_keep_q4 <- years[index_keep_q4]
+
+# Now we have an array with data for that quarter
+# We need to now calculate the average within a year.
+# Get a sequence that takes every third value between 1: number of months (length)
+loop_seq_q1 <- seq(1, dim(temp_q1)[3], by = 3)
+loop_seq_q4 <- seq(1, dim(temp_q4)[3], by = 3)
+
+# Create objects that will hold data
+dlist_q1 <- list()
+dlist_q4 <- list()
+
+temp_1 <- c()
+temp_2 <- c()
+temp_3 <- c()
+temp_ave_q1 <- c()
+
+temp_10 <- c()
+temp_11 <- c()
+temp_12 <- c()
+temp_ave_q4 <- c()
+
+# Now average by quarter. The vector loop_seq_q1 is 1, 4, 7 etc. So first i is 1, 2, 3,
+# which is the index we want. 
+
+for(i in loop_seq_q1) {
+  
+  temp_1 <- temp_q1[, , (i)]
+  temp_2 <- temp_q1[, , (i + 1)]
+  temp_3 <- temp_q1[, , (i + 2)]
+  
+  temp_10 <- temp_q4[, , (i)]
+  temp_11 <- temp_q4[, , (i + 1)]
+  temp_12 <- temp_q4[, , (i + 2)]
+  
+  temp_ave_q1 <- (temp_1 + temp_2 + temp_3) / 3
+  temp_ave_q4 <- (temp_10 + temp_11 + temp_12) / 3
+  
+  list_pos_q1 <- ((i/3) - (1/3)) + 1 # to get index 1:n(years)
+  list_pos_q4 <- ((i/3) - (1/3)) + 1 # to get index 1:n(years)
+  
+  dlist_q1[[list_pos_q1]] <- temp_ave_q1
+  dlist_q4[[list_pos_q4]] <- temp_ave_q4
+  
+}
+
+# Now name the lists with the year:
+names(dlist_q1) <- unique(years_keep_q1)
+names(dlist_q4) <- unique(years_keep_q4)
+
+# Now I need to make a loop where I extract the raster value for each year...
+# The cpue data is called dat so far in this script
+
+# Filter years in the cpue data frame to only have the years I have temperature for
+d_sub_temp_q1 <- dat %>% filter(quarter == 1) %>% filter(year %in% names(dlist_q1)) %>% droplevels()
+d_sub_temp_q4 <- dat %>% filter(quarter == 4) %>% filter(year %in% names(dlist_q4)) %>% droplevels()
+
+# Create data holding object
+temp_data_list_q1 <- list()
+temp_data_list_q4 <- list()
+
+# ... And for the temperature raster
+raster_list_q1 <- list()
+raster_list_q4 <- list()
+
+# Create factor year for indexing the list in the loop
+d_sub_temp_q1$year_f <- as.factor(d_sub_temp_q1$year)
+d_sub_temp_q4$year_f <- as.factor(d_sub_temp_q4$year)
+
+# Loop through each year and extract raster values for the cpue data points
+for(i in unique(d_sub_temp_q1$year_f)) {
+  
+  # Set plot limits
+  ymin = 54; ymax = 58; xmin = 12; xmax = 22
+  
+  # Subset a year
+  temp_slice_q1 <- dlist_q1[[i]]
+  temp_slice_q4 <- dlist_q4[[i]]
+  
+  # Create raster for that year (i)
+  r_q1 <- raster(t(temp_slice_q1), xmn = min(lon), xmx = max(lon), ymn = min(lat), ymx = max(lat),
+                 crs = CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))
+  r_q4 <- raster(t(temp_slice_q4), xmn = min(lon), xmx = max(lon), ymn = min(lat), ymx = max(lat),
+                 crs = CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))
+  
+  # Flip...
+  r_q1 <- flip(r_q1, direction = 'y')
+  r_q4 <- flip(r_q4, direction = 'y')
+  
+  plot(r_q1, main = paste(i, "Q1"))
+  plot(r_q4, main = paste(i, "Q4"))
+  
+  # Filter the same year (i) in the cpue data and select only coordinates
+  d_slice_q1 <- d_sub_temp_q1 %>% filter(year_f == i) %>% dplyr::select(lon, lat)
+  d_slice_q4 <- d_sub_temp_q4 %>% filter(year_f == i) %>% dplyr::select(lon, lat)
+  
+  # Make into a SpatialPoints object
+  data_sp_q1 <- SpatialPoints(d_slice_q1)
+  data_sp_q4 <- SpatialPoints(d_slice_q4)
+  
+  # Extract raster value (temperature)
+  rasValue_q1 <- raster::extract(r_q1, data_sp_q1)
+  rasValue_q4 <- raster::extract(r_q4, data_sp_q4)
+  
+  # Now we want to plot the results of the raster extractions by plotting the cpue
+  # data points over a raster and saving it for each year.
+  # Make the SpatialPoints object into a raster again (for pl)
+  df_q1 <- as.data.frame(data_sp_q1)
+  df_q4 <- as.data.frame(data_sp_q4)
+  
+  # Add in the raster value in the df holding the coordinates for the cpue data
+  d_slice_q1$temp <- rasValue_q1
+  d_slice_q4$temp <- rasValue_q4
+  
+  # Add in which year
+  d_slice_q1$year <- i
+  d_slice_q4$year <- i
+  
+  # Create a index for the data last where we store all years (because our loop index
+  # i is not continuous, we can't use it directly)
+  index_q1 <- as.numeric(d_slice_q1$year)[1] - 1992
+  index_q4 <- as.numeric(d_slice_q4$year)[1] - 1992
+  
+  # Add each years' data in the list
+  temp_data_list_q1[[index_q1]] <- d_slice_q1
+  temp_data_list_q4[[index_q4]] <- d_slice_q4
+  
+  # Save to check each year is ok! First convert the raster to points for plotting
+  # (so that we can use ggplot)
+  map_q1 <- rasterToPoints(r_q1)
+  map_q4 <- rasterToPoints(r_q4)
+  
+  # Make the points a dataframe for ggplot
+  df_rast_q1 <- data.frame(map_q1)
+  df_rast_q4 <- data.frame(map_q4)
+  
+  # Rename y-variable and add year
+  df_rast_q1 <- df_rast_q1 %>% rename("temp" = "layer") %>% mutate(year = i)
+  df_rast_q4 <- df_rast_q4 %>% rename("temp" = "layer") %>% mutate(year = i)
+  
+  # Add each years' raster data frame in the list
+  raster_list_q1[[index_q1]] <- df_rast_q1
+  raster_list_q4[[index_q4]] <- df_rast_q4
+  
+  # Make appropriate column headings
+  colnames(df_rast_q1) <- c("Longitude", "Latitude", "temp")
+  colnames(df_rast_q4) <- c("Longitude", "Latitude", "temp")
+  
+  # Make a map for q1
+  ggplot(data = df_rast_q1, aes(y = Latitude, x = Longitude)) +
+    geom_raster(aes(fill = temp)) +
+    geom_point(data = d_slice_q1, aes(x = lon, y = lat, fill = temp),
+               color = "black", size = 5, shape = 21) +
+    theme_bw() +
+    geom_sf(data = world, inherit.aes = F, size = 0.2) +
+    coord_sf(xlim = c(xmin, xmax),
+             ylim = c(ymin, ymax)) +
+    scale_colour_gradientn(colours = rev(terrain.colors(10)),
+                           limits = c(-2, 17)) +
+    scale_fill_gradientn(colours = rev(terrain.colors(10)),
+                         limits = c(-2, 17)) +
+    NULL
+
+  ggsave(paste("figures/supp/temp_rasters/", i,"q1.png", sep = ""),
+         width = 6.5, height = 6.5, dpi = 600)
+
+  # Make a map for q4
+  ggplot(data = df_rast_q4, aes(y = Latitude, x = Longitude)) +
+    geom_raster(aes(fill = temp)) +
+    geom_point(data = d_slice_q4, aes(x = lon, y = lat, fill = temp),
+               color = "black", size = 5, shape = 21) +
+    theme_bw() +
+    geom_sf(data = world, inherit.aes = F, size = 0.2) +
+    coord_sf(xlim = c(xmin, xmax),
+             ylim = c(ymin, ymax)) +
+    scale_colour_gradientn(colours = rev(terrain.colors(10)),
+                           limits = c(-2, 17)) +
+    scale_fill_gradientn(colours = rev(terrain.colors(10)),
+                         limits = c(-2, 17)) +
+    NULL
+
+  ggsave(paste("figures/supp/temp_rasters/", i,"q4.png", sep = ""),
+         width = 6.5, height = 6.5, dpi = 600)
+
+}
+
+# Now create a data frame from the list of all annual values
+big_dat_temp_q1 <- dplyr::bind_rows(temp_data_list_q1)
+big_dat_temp_q4 <- dplyr::bind_rows(temp_data_list_q4)
+big_dat_temp <- bind_rows(mutate(big_dat_temp_q1, quarter = 1),
+                          mutate(big_dat_temp_q4, quarter = 4))
+
+big_raster_dat_temp_q1 <- dplyr::bind_rows(raster_list_q1)
+big_raster_dat_temp_q4 <- dplyr::bind_rows(raster_list_q4)
+big_raster_dat_temp <- bind_rows(mutate(big_raster_dat_temp_q1, quarter = 1),
+                                 mutate(big_raster_dat_temp_q4, quarter = 4))
+
+# Create an ID for matching the temperature data with the data
+dat$id_temp <- paste(dat$year, dat$quarter, dat$lon, dat$lat, sep = "_")
+big_dat_temp$id_temp <- paste(big_dat_temp$year, big_dat_temp$quarter, big_dat_temp$lon, big_dat_temp$lat, sep = "_")
+
+# Which id's are not in the cpue data (dat)? (It's because I don't have those years, not about the location)
+ids <- dat$id_temp[!dat$id_temp %in% c(big_dat_temp$id_temp)]
+ids
+
+# Select only the columns we want to merge
+big_dat_sub_temp <- big_dat_temp %>% dplyr::select(id_temp, temp)
+
+# Remove duplicate ID (one temp value per id)
+big_dat_sub_temp2 <- big_dat_sub_temp %>% distinct(id_temp, .keep_all = TRUE)
+```
+
+```{r merge oxy and temp data with fish data}
+env_dat <- left_join(rename(big_dat_sub_temp2, id_env = id_temp),
+                     rename(big_dat_sub_oxy2, id_env = id_oxy))
+
+dat <- dat %>% dplyr::select(-id_oxy) %>% rename(id_env = id_temp) %>% left_join(env_dat) %>% dplyr::select(-id_env)
+```
+
+```{r plot oxygen and temperature ranges}
+# Temperature
+plot_map_labels_fc + 
+  geom_point(data = dat, aes(X, Y, color = temp), size = 1/4) +
+  facet_grid(quarter~year) + 
+  labs(color = "Sea bottom temperature [°C]") +
+  theme(legend.position = "bottom",
+        legend.key.height = unit(0.4, 'cm'),
+        legend.title = element_text(size = 6),
+        legend.text = element_text(size = 6))
+
+ggsave("figures/otolith_map_temp.pdf", width = 17, height = 17, units = "cm")
+
+# Oxygen
+plot_map_labels_fc + 
+  geom_point(data = dat, aes(X, Y, color = oxy), size = 1/4) +
+  facet_grid(quarter~year) + 
+  labs(color = expression(paste("Sea bottom oxygen, O" [2], " [ml/L]", sep = ""))) +
+  theme(legend.position = "bottom",
+        legend.key.height = unit(0.4, 'cm'),
+        legend.title = element_text(size = 6),
+        legend.text = element_text(size = 6))
+
+ggsave("figures/otolith_map_oxy.pdf", width = 17, height = 17, units = "cm")
+```
 
 
 

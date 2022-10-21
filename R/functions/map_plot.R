@@ -27,6 +27,7 @@ theme_plot <- function(base_size = 11, base_family = "") {
       legend.margin = margin(0, 0, 0, 0),
       legend.box.margin = margin(-5, -5, -5, -5),
       strip.background = element_rect(fill = "grey95"),
+      strip.text = element_text(color = "grey10"),
       strip.text.x = element_text(margin = margin(b = 2, t = 2), color = "grey10", size = 10),
       panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
       panel.background = element_blank()
@@ -41,8 +42,7 @@ theme_facet_map <- function(base_size = 10, base_family = "") {
       axis.text.x = element_text(angle = 90),
       axis.text = element_text(size = 6),
       strip.background = element_rect(fill = "gray95"),
-      #strip.text.x = element_text(margin = margin(b = 2, t = 2), color = "grey10", size = 10),
-      strip.text = element_text(margin = margin(b = 2, t = 2), color = "grey10", size = 9), 
+      strip.text = element_text(margin = margin(b = 1, t = 1), color = "grey10", size = 6), 
       legend.position = c(0.7, 0.02),
       legend.direction = "horizontal"
     )
@@ -67,9 +67,14 @@ plot_map <-
   NULL
 
 plot_map_fc <- 
-  plot_map +
-  theme(strip.text = element_text(margin = margin(b = 1, t = 1), color = "grey10", size = 8),
-        axis.text.x = element_text(angle = 90))
+  ggplot(swe_coast_proj) + 
+  xlim(xmin2, xmax2) +
+  ylim(ymin2, ymax2) +
+  labs(x = "Longitude", y = "Latitude") +
+  geom_sf(size = 0.2) + 
+  theme_facet_map(base_size = 8) +
+  NULL
+
 
 plot_map_labels <- 
   plot_map + 
@@ -82,6 +87,13 @@ plot_map_labels <-
   annotate("text", label = "Latvia", x = xmin2 + 0.99*xrange, y = ymin2 + 0.65*yrange, color = "black", size = 1.9, angle = 75)
 
 plot_map_labels_fc <- 
-  plot_map_labels +
-  theme(strip.text = element_text(margin = margin(b = 1, t = 1), color = "grey10", size = 8),
-        axis.text.x = element_text(angle = 90))
+  plot_map_fc + 
+  annotate("text", label = "Sweden", x = xmin2 + 0.25*xrange, y = ymin2 + 0.75*yrange, color = "black", size = 1.5) +
+  annotate("text", label = "Denmark", x = xmin2 + 0.029*xrange, y = ymin2 + 0.32*yrange, color = "black", size = 1.5, angle = 75) +
+  annotate("text", label = "Germany", x = xmin2 + 0.07*xrange, y = ymin2 + 0.022*yrange, color = "black", size = 1.5) +
+  annotate("text", label = "Poland", x = xmin2 + 0.55*xrange, y = ymin2 + 0.08*yrange, color = "black", size = 1.5) +
+  annotate("text", label = "Russia", x = xmin2 + 0.95*xrange, y = ymin2 + 0.18*yrange, color = "black", size = 1.5) +
+  annotate("text", label = "Lithuania", x = xmin2 + 1*xrange, y = ymin2 + 0.43*yrange, color = "black", size = 1.5, angle = 75) +
+  annotate("text", label = "Latvia", x = xmin2 + 0.99*xrange, y = ymin2 + 0.65*yrange, color = "black", size = 1.5, angle = 75)
+
+           
