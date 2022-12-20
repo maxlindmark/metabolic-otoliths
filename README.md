@@ -1,3 +1,3 @@
 # metabolic_otoliths
 
-plot otolith samples in space
+plot otolith samples in space. 
